@@ -2359,6 +2359,10 @@ namespace CNTK
         friend class Trainer;
 
     public:
+
+// We need to have parameter names in Forward/Backward so that Swig can generate correct wrappings.
+#pragma warning(push)
+#pragma warning(disable: 4100)
         ///
         /// Computes and stores the values of specified variables in the 'outputs' map, using provided 'inputs' values corresponding
         /// to each leaf variable of the Function of VariableKind 'Input'.
@@ -2376,7 +2380,10 @@ namespace CNTK
         virtual BackPropStatePtr Forward(const std::unordered_map<Variable, ValuePtr>& arguments,
                                          std::unordered_map<Variable, ValuePtr>& outputs,
                                          const DeviceDescriptor& computeDevice = DeviceDescriptor::UseDefaultDevice(),
-                                         const std::unordered_set<Variable>& outputsToRetainBackwardStateFor = {}) = 0;
+                                         const std::unordered_set<Variable>& outputsToRetainBackwardStateFor = {})
+        {
+			NOT_IMPLEMENTED; 
+		}
 
         ///
         /// Backpropagates supplied 'rootGradientValues' for one or more of the output variables of the Function, to produce gradient Values
@@ -2389,12 +2396,16 @@ namespace CNTK
         ///
         virtual void Backward(const BackPropStatePtr& state,
                               const std::unordered_map<Variable, ValuePtr>& rootGradientValues,
-                              std::unordered_map<Variable, ValuePtr>& backPropagatedGradientValuesForInputs) = 0;
-
+                              std::unordered_map<Variable, ValuePtr>& backPropagatedGradientValuesForInputs) 
+        { 
+            NOT_IMPLEMENTED; 
+        }
+#pragma warning(pop)
         ///
         /// Returns the name of the operation that this Function denotes
         ///
-        virtual const std::wstring& OpName() const = 0;
+        virtual const std::wstring& OpName() const 
+        { return m_opName; }
 
     public:
 
@@ -2430,6 +2441,11 @@ namespace CNTK
         /// user-defined op-codes with custom functionality.
         ///
         CNTK_API static FunctionPtr Deserialize(const Dictionary& dictionary, const ::CNTK::DeviceDescriptor& device = DeviceDescriptor::UseDefaultDevice());
+
+        ///
+        /// This method needs to be explicitly overriden in subclasses.
+        ///
+        size_t CurrentVersion() const override { NOT_IMPLEMENTED; }
 
     public:
         ///
@@ -2654,6 +2670,18 @@ namespace CNTK
         // Disallow copy and move construction and assignment
         Function(const Function&) = delete; Function(Function&&) = delete; Function& operator=(const Function&) = delete; Function& operator=(Function&&) = delete;
 
+#ifndef SWIG
+        // SWIG chokes at the Dictionary&&
+    protected:
+        ///
+        /// Constructor for derived 'Function' types to specify the actual input and output variables for the (primitive) Function instance.
+        ///
+        CNTK_API Function(const std::vector<Variable>& inputs, const std::vector<Variable>& outputs, Dictionary&& functionConfig, const std::wstring& name = L"", const std::wstring& uid = Internal::GenerateUid(L"UserDefinedFunction"));
+
+#endif
+    public:
+		CNTK_API Function(const std::vector<Variable>& inputs, const std::vector<Variable>& outputs, const std::wstring& name = L"", const std::wstring& uid = Internal::GenerateUid(L"UserDefinedFunction"));
+
     private:
 
         CNTK_API Function(const std::vector<Variable>& inputs, const std::vector<Variable>& outputs, Dictionary&& functionConfig, const FunctionPtr& rootFunction, const std::wstring& name, const std::wstring& uid);
@@ -2665,6 +2693,7 @@ namespace CNTK
         std::wstring m_name;
         std::wstring m_uid;
         Dictionary m_attributes;
+        std::wstring m_opName;
     };
 
     ///
