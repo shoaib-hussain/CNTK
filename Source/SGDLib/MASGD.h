@@ -217,39 +217,8 @@ namespace Microsoft { namespace MSR { namespace CNTK {
             if (myStatus == MAWorkerStatus::DataEnd)
             {
                 // in this case, we always return true 
-                vector<MPI_Request> sendRequests(m_numWorkers);
-                int sentSignal = (int)MAWorkerStatus::DataEnd;
-                // 1. send my status to notify peers 
-                for (int dest = 0; dest < (int)m_numWorkers; dest++)
-                {
-                    if (dest != m_myRank)
-                    {
-                        MPI_Isend(&sentSignal, 1, MPI_INT, dest, m_numSyncPerformed, m_pMPI->Communicator() , &sendRequests[dest]);
-                    }
-                }
-                // 2. recv others 
-                for (int src = 0; src < m_numWorkers; src++)
-                {
-                    if (src != m_myRank && m_MAworkerStatus[src] == MAWorkerStatus::DataProcessing)
-                    {
-                        int recvSignal = 0;
-                        MPI_Status status;
-                        MPI_Recv(&recvSignal, 1, MPI_INT, src, m_numSyncPerformed, m_pMPI->Communicator(), &status);
-                        m_MAworkerStatus[src] = (MAWorkerStatus)recvSignal;
-#if 0
-                        assert(status.MPI_SOURCE == src);
-                        assert(status.MPI_TAG == m_numSyncPerformed);
-#endif 
-                    }
-                }
-                // 3. make sure sending operation finished 
-                for (int dest = 0; dest < m_numWorkers; dest++)
-                {
-                    if (dest != m_myRank)
-                    {
-                        MPI_Wait(&sendRequests[dest], MPI_STATUS_IGNORE);
-                    }
-                }
+                // Broadcast my status to peers and Receive peers status
+                MPI_Bcast(&m_MAworkerStatus[m_myRank], 1, MPI_INT, m_myRank, m_pMPI->Communicator()) || MpiFail("MPI_Bcast");
                 retval = true; 
             }
             else if (myStatus == MAWorkerStatus::DataProcessing)
@@ -259,41 +228,8 @@ namespace Microsoft { namespace MSR { namespace CNTK {
                 retval = false;
                 if (!somePeersHaveArrivedAtEnd())
                 {
-                    int sentSignal = (int)MAWorkerStatus::DataProcessing; 
-                    vector<MPI_Request> sendRequests(m_numWorkers); 
-                    // 1. send my status to peers 
-                    for (int dest = 0; dest < (int)m_numWorkers; dest++)
-                    {
-                        if (dest != m_myRank)
-                        {
-                            MPI_Isend(&sentSignal, 1, MPI_INT, dest, m_numSyncPerformed, m_pMPI->Communicator(), &sendRequests[dest]);
-                        }
-                    }
-                    // 2. recv status from others (blocking call)
-                    for (int src = 0; src < (int)m_numWorkers; src++)
-                    {
-                        if (src != m_myRank)
-                        {
-                            int recvSignal = 0;
-                            MPI_Status status;
-                            MPI_Recv(&recvSignal, 1, MPI_INT, src, m_numSyncPerformed, m_pMPI->Communicator(), &status);
-#if 0 
-                            // for debugging purpose, to be removed when mature 
-                            assert(status.MPI_SOURCE == src);
-                            assert(status.MPI_TAG == m_numSyncPerformed);
-#endif 
-                            m_MAworkerStatus[src] = (MAWorkerStatus)recvSignal;
-                        }
-                    }
-                    // 3. makes sure the sending operation has completed 
-                    for (int dest = 0; dest < (int)m_numWorkers;  dest++)
-                    {
-                        if (dest != m_myRank)
-                        {
-                            MPI_Wait(&sendRequests[dest], MPI_STATUS_IGNORE);
-                        }
-                    }
-                    // 4. check peer status again
+                    MPI_Bcast(&m_MAworkerStatus[m_myRank], 1, MPI_INT, m_myRank, m_pMPI->Communicator()) || MpiFail("MPI_Bcast");
+                    // check peer status again
                     retval = !somePeersHaveArrivedAtEnd(); 
                 }
             }

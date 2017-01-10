@@ -290,8 +290,8 @@ private:
             assert(numNodesHeadersReceivedFrom == (NumProc() - 1));
         }
 
-        MPI_Request bcastHeaderRequest;
-        MPI_Ibcast(headerCPU, headerCPU->Size(), MPI_CHAR, m_mpi->MainNodeRank(), m_mpi->Communicator(), &bcastHeaderRequest) || MpiFail("MPI_Bcast");
+        // Broadcast the aggregated headers from the main node to all ranks
+        MPI_Bcast(headerCPU, headerCPU->Size(), MPI_CHAR, m_mpi->MainNodeRank(), m_mpi->Communicator()) || MpiFail("MPI_Bcast");
 
         // Wait for the allreduce operations to finish and initiate transfer back to the GPU if needed
         if (!m_nccl.IsSupported())
@@ -316,7 +316,6 @@ private:
         // Wait for completion of the async send requests
         if (!m_mpi->IsMainNode())
             MPI_Wait(&sendHeaderRequest, MPI_STATUSES_IGNORE) || MpiFail("MPI_Wait");
-        MPI_Wait(&bcastHeaderRequest, MPI_STATUSES_IGNORE) || MpiFail("MPI_Wait");
 
         if (showSyncPerfStats)
         {
