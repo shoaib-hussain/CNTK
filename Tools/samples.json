@@ -81,14 +81,6 @@
     },
     {
         "category": ["Image"],
-        "name":  "MNIST CNN OCR",
-        "url":  "https://github.com/Microsoft/CNTK/wiki/Tutorial2",
-        "description":  "Use CNN on an OCR problem.",
-        "language":  ["Python", "BrainScript"],
-        "type":  ["Tutorial", "Recipe"]
-    },
-    {
-        "category": ["Image"],
         "name":  "MNIST Feed Forward OCR",
         "url":  "https://github.com/Microsoft/CNTK/blob/master/Tutorials/CNTK_103B_MNIST_FeedForwardNetwork.ipynb",
         "description":  "Use Feed Forward networks on an OCR problem.",
