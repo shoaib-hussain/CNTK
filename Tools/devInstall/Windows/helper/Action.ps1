@@ -15,9 +15,6 @@ function ActionOperations(
             ActionItem $actionItem
         }
     }
-
-    Write-Host "Install operations finished"
-    Write-Host
 }
 
 function ActionItem(
@@ -87,14 +84,15 @@ function InstallYml(
     $env= $table["Env"]
     $ymlFile  = $table["ymlFile"]
 
-    $envsDir = join-path $basePath "envs"
-    $targetDir = join-path $envsDir $env
+    $envsDir = Join-Path $basePath envs
+    $targetDir = Join-Path $envsDir $env
+    $condaPath = Join-Path $basePath Scripts\conda.exe
 
     if (test-path -path $targetDir -PathType Container) {
-        $newTable = @{ Function = "InstallExe"; Command = "$basepath\Scripts\conda.exe"; Param = "env update --file $ymlFile --name $targetDir"; WorkDir = "$basePath\Scripts"; runAs=$false }
+        $newTable = @{ Function = "InstallExe"; Command = $condaPath; Param = "env update --file `"$ymlFile`" --name $targetDir"; WorkDir = "$basePath\Scripts"; runAs=$false }
     }
     else {
-        $newTable = @{ Function = "InstallExe"; Command = "$basepath\Scripts\conda.exe"; Param = "env create --file $ymlFile --prefix $targetDir"; WorkDir = "$basePath\Scripts"; runAs=$false }
+        $newTable = @{ Function = "InstallExe"; Command = $condaPath; Param = "env create --file `"$ymlFile`" --prefix $targetDir"; WorkDir = "$basePath\Scripts"; runAs=$false }
     }
 
     InstallExe $newTable
@@ -165,8 +163,10 @@ function InstallMSI(
     $msi  = $table["MsiName"]
     $dir  = $table["MsiDir"]
 
+    $completeMsiName = Join-Path $dir $msi
+
     $cmd  = "c:\Windows\System32\MSIEXEC.EXE"
-    $param= "/i $dir\$msi /quiet /norestart"
+    $param= "/i `"$completeMsiName`" /quiet /norestart"
   
     DoProcess -doExecute $Execute -command $cmd -param "$param" -requiresRunAs $true -maxErrorLevel 0 -throwOnError $true
 }
@@ -186,17 +186,6 @@ function MakeDirectory(
     }
 }
 
-function RobocopyFromLocalCache(
-    [Parameter(Mandatory = $true)][hashtable] $table
-)
-{
-    FunctionIntro $table
-    $source = $table["Source"]
-    $destination = $table["Destination"]
-
-    RobocopySourceDestination $source $destination 
-}
-
 function RobocopySourceDestination(
     [Parameter(Mandatory = $true)][string] $source,
     [Parameter(Mandatory = $true)][string] $destination,
@@ -206,13 +195,12 @@ function RobocopySourceDestination(
         throw SourceDirectory [$source] is missing
     }
 
-
     $option = "/NFL /copy:DT /dcopy:D /xj"
     if (-not $copyAdditive) {
         $option += " /MIR "
     }
 
-    $param = "$source $destination $option"
+    $param = "`"$source`" `"$destination`" $option"
 
     DoProcess -doExecute $Execute -command $roboCopyCmd -param $param -maxErrorLevel 8 -throwOnError $true
 }
@@ -238,7 +226,7 @@ function SetEnvironmentVariable(
         Write-Verbose "$demoMessage[$func]: [$name] = [$content] in [$location]"
     }
 
-    SetEnvVar -name "$name" -content "$content" 
+    SetUserEnvironmentVariable -name "$name" -content "$content" 
 }
 
 function AddToPath(
@@ -275,7 +263,7 @@ function AddToPath(
         $pathvalue = "$pathvalue;$dir"
     }
     if ($Execute) {
-        SetEnvVar -name $env -content "$pathvalue" 
+        SetUserEnvironmentVariable -name $env -content $pathvalue
     }
 }
 
@@ -396,25 +384,38 @@ function ExtractAllFromTarGz(
         return 
     }
 
-    $appDir = join-path $env:ProgramFiles "git\usr\bin"
-    $tarApp = "tar.exe"
+    $app = CallGetCommand -application git.exe
 
-    if (-not (test-path -path "$appDir\$tarApp" -PathType Leaf)) {
-        throw "Unpacking the file [$targzFileName] requires extraction utility [$appDir\$tarApp].\n The utility wasn't found"
+    if (-not $app) {
+        throw "Unpacking the file [$targzFileName] requires extraction utility TAR.EXE.\n Make sure `"Git for Windows`" is installed on your machine."
     }
 
-    Copy-Item $sourceFile "$destination\$targzFileName" -ErrorAction SilentlyContinue
+    $location = Get-Command "git.exe" -CommandType Application
+    $location = $location.Source
+    $location = Split-Path $location -Parent
+    $location = Split-Path $location -Parent
+
+    $appDir = Join-Path $location "usr\bin"
+    $completeApp = Join-Path $appDir "tar.exe"
+
+    if (-not (Test-Path -path $completeApp -PathType Leaf)) {
+        throw "Unpacking the file [$targzFileName] requires extraction utility [$completeApp].\n The utility wasn't found"
+    }
+
+    $completeDestination = Join-Path $destination $targzFileName
+
+    Copy-Item $sourceFile $completeDestination -ErrorAction SilentlyContinue
 
     $dosCommand = @"
-set path="$appDir";%PATH% & tar.exe -xz --force-local -f "$destination\$targzFileName" -C "$destination"
+set path=$appDir;%PATH% & tar.exe -xz --force-local -f "$completeDestination" -C "$destination"
 "@
 
     & cmd /c $dosCommand
     if ($LASTEXITCODE -gt 0) {
-        throw "Running [$appDir\tar.exe] Command failed with exit code $LASTEXITCODE"
+        throw "Running [$completeApp] Command failed with exit code $LASTEXITCODE"
     }
-
-    Remove-Item "$destination\$targzFileName" -ErrorAction SilentlyContinue
+    
+    Remove-Item "$completeDestination" -ErrorAction SilentlyContinue
 }
 
 function CreateBatch(
@@ -593,15 +594,26 @@ function DoProcess(
     }
 }
 
-function SetEnvVar(
+
+function SetUserEnvironmentVariable(
     [Parameter(Mandatory=$true)][string] $name,
-    [Parameter(Mandatory=$true)][string] $content,
-    [string] $location = "Machine")
+    [Parameter(Mandatory=$true)][string] $content)    
 {
-    Write-Verbose "SetEnvVar [$name] with [$content]"
+    Write-Verbose "SetUserEnvironmentVariable [$name] with [$content]"
     
     if ($Execute) {
-        $commandString = "& { [environment]::SetEnvironmentVariable('"+$name+"', '"+$content+"', '"+$location+"') }"
+        [environment]::SetEnvironmentVariable($name, $content, "USER")
+    }    
+}
+
+function SetMachineEnvironmentVariable(
+    [Parameter(Mandatory=$true)][string] $name,
+    [Parameter(Mandatory=$true)][string] $content)
+{
+    Write-Verbose "SetMachineEnvironmentVariable [$name] with [$content]"
+    
+    if ($Execute) {
+        $commandString = "& { [environment]::SetEnvironmentVariable(`"$name`", `"$content`", `"MACHINE`") }"
         RunPowershellCommand -command "$commandString" -elevated $true -maxErrorLevel 0
     }    
 }
