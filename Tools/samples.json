@@ -89,6 +89,14 @@
     },
     {
         "category": ["Image"],
+        "name":  "MNIST Autoencoder Dim Reduction",
+        "url":  "https://github.com/Microsoft/CNTK/blob/master/Tutorials/CNTK_105_Basic_Autoencoder_for_Dimensionality_Reduction.ipynb",
+        "description":  "Use Autoencoder for dimensionality reduction.",
+        "language":  ["Python"],
+        "type":  ["Tutorial", "Recipe"]
+    },
+    {
+        "category": ["Image"],
         "name":  "Image Recognition",
         "url":  "https://github.com/Microsoft/CNTK/blob/master/Tutorials/CNTK_201B_CIFAR-10_ImageHandsOn.ipynb",
         "description":  "Hands-on lab that shows how to implement an image recognition task using convolutional neural networks.",
