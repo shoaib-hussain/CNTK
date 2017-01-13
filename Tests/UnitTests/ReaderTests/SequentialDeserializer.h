@@ -33,11 +33,6 @@ namespace Microsoft { namespace MSR { namespace CNTK { namespace Test {
     public:
 		struct SequenceInfo
 		{
-			bool operator < (const SequenceInfo& i)
-			{
-				return startingValue < i.startingValue;
-			}
-
 			size_t id;
 			size_t size;
 			size_t chunkId;
@@ -237,6 +232,28 @@ namespace Microsoft { namespace MSR { namespace CNTK { namespace Test {
 
         DISABLE_COPY_AND_MOVE(SequentialDeserializer);
     };
+
+	bool operator == (const SequentialDeserializer::SequenceInfo& a, const SequentialDeserializer::SequenceInfo& b)
+	{
+		return a.id == b.id && a.size == b.size && a.chunkId == b.chunkId && a.startingValue == b.startingValue;
+	}
+
+	bool operator != (const SequentialDeserializer::SequenceInfo& a, const SequentialDeserializer::SequenceInfo& b)
+	{
+		return !(a == b);
+	}
+
+	std::ostream& operator << (std::ostream& ostr, const SequentialDeserializer::SequenceInfo& a)
+	{
+		ostr << a.startingValue;
+		return ostr;
+	}
+
+	bool operator < (const SequentialDeserializer::SequenceInfo& a, const SequentialDeserializer::SequenceInfo& b)
+	{
+		return a.startingValue < b.startingValue;
+	}
+
 
 	typedef std::shared_ptr<SequentialDeserializer> SequentialDeserializerPtr;
 
