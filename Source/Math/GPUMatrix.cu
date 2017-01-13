@@ -4227,10 +4227,29 @@ GPUMatrix<ElemType>& GPUMatrix<ElemType>::GetARowByIndex(const GPUMatrix<ElemTyp
     return *this;
 }
 
+// Calculate CTC score with GPU
+// prob (input): the posterior output from the network
+// alpha, beta (output): alpha and beta for forward-backward calculation. 
+// phoneseq (input): phone ID sequence for each utterance in this minibatch. each col is one utterance 
+// phonebound (input): phone boundary (frame index) of each phone for each utterance in this minibatch. Each col is one utterance 
+// uttMap (input):  map from utterance ID to minibatch channel ID. We need this because each channel may contain more than one utterance.
+// uttBeginFrame(input): the positon of the first frame of each utterance in the minibatch channel. We need this because each channel may contain more than one utterance.
+// uttphonenum (input): the phone number of each utterance. The size of this vector =  the number of all utterances in this minibatch
+// samplesInRecurrentStep (input): channel number of this minibatch
+// maxframenum (input): the maximum channel frame number
 template<class ElemType>
-GPUMatrix<ElemType>& GPUMatrix<ElemType>::AssignCTCScore_m(const GPUMatrix<ElemType>& prob, GPUMatrix<ElemType>& alpha, GPUMatrix<ElemType>& beta,
-    const GPUMatrix<ElemType> phoneseq, const GPUMatrix<ElemType> phonebound, ElemType &totalscore, std::vector<size_t>& uttMap, std::vector<size_t> & uttBeginFrame, std::vector<size_t> & uttFrameNum,
-    std::vector<size_t> & uttPhoneNum, size_t samplesInRecurrentStep, const size_t maxframenum, int delayConstraint, const bool isColWise)
+GPUMatrix<ElemType>& GPUMatrix<ElemType>::AssignCTCScore_m(const GPUMatrix<ElemType>& prob, 
+    GPUMatrix<ElemType>& alpha, 
+    GPUMatrix<ElemType>& beta,
+    const GPUMatrix<ElemType> phoneseq, 
+    const GPUMatrix<ElemType> phonebound, 
+    ElemType &totalscore, 
+    std::vector<size_t>& uttMap, 
+    std::vector<size_t> & uttBeginFrame, 
+    std::vector<size_t> & uttFrameNum,
+    std::vector<size_t> & uttPhoneNum, 
+    size_t samplesInRecurrentStep, 
+    const size_t maxframenum, int delayConstraint, const bool isColWise)
 {
     if (isColWise)
     {

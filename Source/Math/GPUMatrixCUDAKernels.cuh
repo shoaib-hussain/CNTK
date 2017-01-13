@@ -4950,7 +4950,7 @@ __global__ void _maskColumnsValue(ElemType* a, const char* columnsMask, CUDA_LON
     }
 }
 
-
+// calculate alpha in forward-backward calculation. equation (6), (7) in http://machinelearning.wustl.edu/mlpapers/paper_files/icml2006_GravesFGS06.pdf
 template<class ElemType>
 __global__ void _assignAlphaScore_m(
     const ElemType *prob,
@@ -4976,14 +4976,13 @@ __global__ void _assignAlphaScore_m(
     if (uttid >= uttNum || phoneseqid >= phonenum - 1 || t >= framenum || phoneseqid == 0) return;
 
     LONG64 labelid = uttid*maxphonenum + phoneseqid;
-    LONG64 labelid_1 = uttid*maxphonenum + phoneseqid - 1;
-    LONG64 labelid_2 = uttid*maxphonenum + phoneseqid - 2;
-    LONG64 labelid_r = uttid*maxphonenum + phoneseqid + 2;
+    LONG64 labelid_1 = labelid - 1;
+    LONG64 labelid_2 = labelid - 2;
+    LONG64 labelid_r = labelid + 2;
     LONG64 phoneid = (LONG64)(phoneseq[labelid]);
-    LONG64 phoneboundid_l = (LONG64)(phonebound[labelid]);
     LONG64 phoneboundid_r = (LONG64)(phonebound[labelid_r]);
     LONG64 timeid = (t + uttbeginframe[uttid])*samplesInRecurrentStep + uttmap[uttid];
-    LONG64 timeid_1 = (t - 1 + uttbeginframe[uttid])*samplesInRecurrentStep + uttmap[uttid];
+    LONG64 timeid_1 = timeid - samplesInRecurrentStep;
 
     LONG64 probid = timeid*totalphonenum + phoneid;
     LONG64 alphaid = maxphonenum* timeid + phoneseqid;
@@ -4991,11 +4990,10 @@ __global__ void _assignAlphaScore_m(
     LONG64 alphaid_1 = maxphonenum* timeid_1 + phoneseqid - 1;
     LONG64 alphaid_2 = maxphonenum* timeid_1 + phoneseqid - 2;
 
-    LONG64 t_l = 0;
-
     if (t == 0)
     {
-        if (phoneseqid >= 1 && phoneseqid < 3)
+        // Initialize recursion
+        if (phoneseqid == 1 || phoneseqid == 2)
         {
             Alphascore[alphaid] = prob[probid];
         }
@@ -5004,9 +5002,8 @@ __global__ void _assignAlphaScore_m(
     {
         if (phoneseqid >= 1)
         {
-
-            float x = LZERO;
-            float y;
+            ElemType x = LZERO;
+            ElemType y;
 
             ElemType ascore;
             if (phoneseqid > 2)
@@ -5036,16 +5033,12 @@ __global__ void _assignAlphaScore_m(
             {
                 if (phoneid == totalphonenum - 1)
                 {
-                    /*t_l = max(phoneboundid_l - delayConstraint - 1, (LONG64)0);
-                    if (t > phoneboundid_r + delayConstraint - 1 || t < t_l)*/
                     //only constraint right side
                     if (t > phoneboundid_r + delayConstraint - 1)
                         Alphascore[alphaid] = LZERO;
                 }
                 else if (phoneid != totalphonenum - 1)
                 {
-                    /*t_l = max(phoneboundid_l - delayConstraint, (LONG64)0);
-                    if (t > phoneboundid_r + delayConstraint || t < t_l)*/
                     if (t > phoneboundid_r + delayConstraint)
                         Alphascore[alphaid] = LZERO;
                 }
@@ -5053,11 +5046,10 @@ __global__ void _assignAlphaScore_m(
 
         }
     }
-    //__syncthreads();
-
+    __syncthreads();
 }
 
-
+//calculate beta in forward-backward calculation. equation (10), (11) in http://machinelearning.wustl.edu/mlpapers/paper_files/icml2006_GravesFGS06.pdf 
 template<class ElemType>
 __global__ void _assignBetaScore_m(
     const ElemType *prob,
@@ -5083,24 +5075,22 @@ __global__ void _assignBetaScore_m(
     if (uttid >= uttNum || phoneseqid >= phonenum - 1 || t >= framenum || phoneseqid == 0) return;
 
     LONG64 labelid = uttid*maxphonenum + phoneseqid;
-    LONG64 labelid_1 = uttid*maxphonenum + phoneseqid + 1;
-    LONG64 labelid_2 = uttid*maxphonenum + phoneseqid + 2;
+    LONG64 labelid_1 = labelid + 1;
+    LONG64 labelid_2 = labelid + 2;
     LONG64 phoneid = (LONG64)(phoneseq[labelid]);
-    LONG64 phoneboundid_l = (LONG64)(phonebound[labelid]);
     LONG64 phoneboundid_r = (LONG64)(phonebound[labelid_2]);
     LONG64 timeid = (t + uttbeginframe[uttid])*samplesInRecurrentStep + uttmap[uttid];
-    LONG64 timeid_1 = (t + 1 + uttbeginframe[uttid])*samplesInRecurrentStep + uttmap[uttid];
+    LONG64 timeid_1 = timeid + samplesInRecurrentStep; 
 
     LONG64 probid = timeid*totalphonenum + phoneid;
     LONG64 betaid = maxphonenum* timeid + phoneseqid;
     LONG64 betaid_0 = maxphonenum* timeid_1 + phoneseqid;
-    LONG64 betaid_1 = maxphonenum* timeid_1 + phoneseqid + 1;
-    LONG64 betaid_2 = maxphonenum* timeid_1 + phoneseqid + 2;
+    LONG64 betaid_1 = betaid_0 + 1;
+    LONG64 betaid_2 = betaid_0 + 2;
 
-    LONG64 t_l;
     if (t == framenum - 1)
     {
-        if (phoneseqid >= phonenum - 3 && phoneseqid < phonenum - 1)
+        if (phoneseqid == phonenum - 3 || phoneseqid == phonenum - 2)
         {
             Betascore[betaid] = prob[probid];
         }
@@ -5109,8 +5099,8 @@ __global__ void _assignBetaScore_m(
     {
         if (phoneseqid >= 1)
         {
-            float x = LZERO;
-            float y;
+            ElemType x = LZERO;
+            ElemType y;
             ElemType ascore;
             if (phoneseqid < phonenum - 3)
             {
@@ -5138,34 +5128,22 @@ __global__ void _assignBetaScore_m(
             {
                 if (phoneid == totalphonenum - 1)
                 {
-                    /*t_l = max(phoneboundid_l - delayConstraint - 1, (LONG64)0);
-                    if (t > phoneboundid_r + delayConstraint - 1 || t < t_l)*/
                     if (t > phoneboundid_r + delayConstraint - 1)
                         Betascore[betaid] = LZERO;
                 }
                 else if (phoneid != totalphonenum - 1)
                 {
-                    /*t_l = max(phoneboundid_l - delayConstraint, (LONG64)0);
-                    if (t > phoneboundid_r + delayConstraint || t < t_l)*/
                     if (t > phoneboundid_r + delayConstraint)
                         Betascore[betaid] = LZERO;
                 }
             }
-
-
         }
 
     }
-    //__syncthreads();
-    //printf("frameid %d\n", t);
-    /*if (t == 0)
-    {
-    Betascore[0] = logaddk(Betascore[1], Betascore[2]);
-    //printf("beta %f %f\n", Betascore[1], Betascore[2]);
-    }*/
-
+    __syncthreads();
 }
 
+// calculate derivative, equation (15) in http://machinelearning.wustl.edu/mlpapers/paper_files/icml2006_GravesFGS06.pdf
 template<class ElemType>
 __global__ void _assignCTCScore_m(
     ElemType *CTCscore,
