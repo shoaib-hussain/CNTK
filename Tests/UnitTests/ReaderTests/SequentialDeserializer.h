@@ -31,6 +31,19 @@ namespace Microsoft { namespace MSR { namespace CNTK { namespace Test {
     class SequentialDeserializer : public IDataDeserializer
     {
     public:
+		struct SequenceInfo
+		{
+			bool operator < (const SequenceInfo& i)
+			{
+				return startingValue < i.startingValue;
+			}
+
+			size_t id;
+			size_t size;
+			size_t chunkId;
+			float startingValue;
+		};
+
         struct SequentialChunk : Chunk
         {
             std::vector<std::vector<float>> m_data;
@@ -38,8 +51,10 @@ namespace Microsoft { namespace MSR { namespace CNTK { namespace Test {
             size_t m_sizeInSequences;
             const TensorShapePtr m_sampleLayout;
 
-            SequentialChunk() : m_sizeInSamples{ 0 }, m_sizeInSequences{ 0 }, m_sampleLayout(std::make_shared<TensorShape>(1))
-            {}
+            SequentialChunk(size_t approxSize) : m_sizeInSamples{ 0 }, m_sizeInSequences{ 0 }, m_sampleLayout(std::make_shared<TensorShape>(1))
+            {
+				m_data.reserve(approxSize);
+			}
 
             SequentialChunk(const SequentialChunk& other)
             {
@@ -91,7 +106,8 @@ namespace Microsoft { namespace MSR { namespace CNTK { namespace Test {
             // Let's generate our data.
             float currentValue = 0;
             size_t currentNumberOfSamples = 0;
-            SequentialChunkPtr currentChunk = std::make_shared<SequentialChunk>();
+            SequentialChunkPtr currentChunk = std::make_shared<SequentialChunk>(chunkSizeInSamples);
+			m_chunks.reserve(sweepNumberOfSamples/chunkSizeInSamples + 1);
             while (currentNumberOfSamples < sweepNumberOfSamples)
             {
                 size_t sequenceLength = 0;
@@ -111,15 +127,25 @@ namespace Microsoft { namespace MSR { namespace CNTK { namespace Test {
                     sequenceData.push_back(currentValue++);
                 }
 
-                if (currentChunk->SizeInSamples() > chunkSizeInSamples)
+                if (currentChunk->SizeInSamples() >= chunkSizeInSamples)
                 {
                     m_chunks.push_back(currentChunk);
-                    currentChunk = std::make_shared<SequentialChunk>();
+                    currentChunk = std::make_shared<SequentialChunk>(chunkSizeInSamples);
                 }
+
+				// Let's record information about the sequence.
+				SequenceInfo info
+				{
+					currentChunk->m_data.size(),
+					sequenceData.size(),
+					m_chunks.size(),
+					sequenceData.front()
+				};
+				m_sequenceInfos[(size_t)info.startingValue] = info;
 
                 currentChunk->AddSequence(std::move(sequenceData));
                 currentNumberOfSamples += sequenceLength;
-            }
+			}
 
             if (currentChunk->SizeInSamples() != 0)
             {
@@ -181,7 +207,7 @@ namespace Microsoft { namespace MSR { namespace CNTK { namespace Test {
             {
                 KeyType key;
                 key.m_sample = 0;
-                key.m_sequence = (uint32_t)i;
+                key.m_sequence = (uint32_t)chunk->m_data[i][0];
                 descriptions.push_back(SequenceDescription{
                     i,
                     (uint32_t)(chunk->m_data[i].size()),
@@ -191,12 +217,28 @@ namespace Microsoft { namespace MSR { namespace CNTK { namespace Test {
             }
         }
 
+		size_t TotalSize() const
+		{
+			size_t size = 0;
+			for (auto& c : m_chunks)
+				size += c->m_sizeInSamples;
+			return size;
+		}
+
+		const std::map<size_t, SequenceInfo>& Corpus() const
+		{
+			return m_sequenceInfos;
+		}
+
     private:
         std::vector<SequentialChunkPtr> m_chunks;
+		std::map<size_t, SequenceInfo> m_sequenceInfos;
         TensorShapePtr m_sampleLayout;
 
         DISABLE_COPY_AND_MOVE(SequentialDeserializer);
     };
+
+	typedef std::shared_ptr<SequentialDeserializer> SequentialDeserializerPtr;
 
     inline std::vector<float> ReadNextSamples(SequenceEnumeratorPtr sequenceEnumerator, size_t numSamples)
     {

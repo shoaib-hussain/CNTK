@@ -10,6 +10,9 @@
 #include "DataDeserializer.h"
 #include "BlockRandomizer.h"
 #include "CorpusDescriptor.h"
+#include "FramePacker.h"
+#include "SequencePacker.h"
+#include "CudaMemoryProvider.h"
 
 #pragma warning(push)
 // disable warning about possible mod 0 operation in uniform_int_distribution
@@ -796,6 +799,260 @@ BOOST_AUTO_TEST_CASE(CheckEpochBoundarySingleWorker)
     test(underTestNo);
 }
 
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(PackerTests)
+
+// Runs single worker till reach end of epoch.
+void RunSingleWorker(PackerPtr packerUnderTest, std::map<size_t, SequentialDeserializer::SequenceInfo>& corpus, std::set<size_t>& chunkIds, size_t maxMinibatchSize, bool strict)
+{
+	bool shouldContinue = true;
+	size_t counter = 0; // for debugging purposes.
+	size_t numberOfReadSamples = 0;
+	while (shouldContinue)
+	{
+		auto minibatch = packerUnderTest->ReadMinibatch();
+		if (minibatch.m_data.size() == 0)
+		{
+			BOOST_REQUIRE_EQUAL(minibatch.m_endOfEpoch, true);
+			break;
+		}
+
+		if (minibatch.m_endOfEpoch)
+		{
+			shouldContinue = false;
+		}
+
+		auto layout = minibatch.m_data.front()->m_layout;
+		size_t numParallelSequences = layout->GetNumParallelSequences();
+		if (numParallelSequences == 0)
+		{
+			continue;
+		}
+
+		if (strict)
+		{
+			BOOST_REQUIRE_EQUAL(layout->GetActualNumSamples() <= maxMinibatchSize, true);
+		}
+		else
+		{
+			if (layout->GetActualNumSamples() > maxMinibatchSize)
+				BOOST_REQUIRE_EQUAL(layout->GetAllSequences().size(), 1);
+		}
+
+		auto data = (float*)minibatch.m_data.front()->m_data;
+		auto sequences = layout->GetAllSequences();
+		for (const auto& s : sequences)
+		{
+			if (s.seqId == GAP_SEQUENCE_ID)
+				continue;
+
+			size_t sequenceFirstValueIndex = numParallelSequences * s.tBegin + s.s;
+
+			float sequenceValue = data[sequenceFirstValueIndex];
+			size_t sequenceLength = s.GetNumTimeSteps();
+
+			auto key = (size_t)sequenceValue;
+			BOOST_REQUIRE_EQUAL(corpus.find(key) != corpus.end(), true);
+			auto correspondingS = corpus[key];
+			BOOST_REQUIRE_EQUAL(correspondingS.startingValue, sequenceValue);
+			BOOST_REQUIRE_EQUAL(correspondingS.size, sequenceLength);
+			chunkIds.insert(correspondingS.chunkId);
+
+			numberOfReadSamples += sequenceLength;
+			corpus.erase(key);
+		}
+
+		counter++;
+	}
+	UNUSED(counter);
+}
+
+// Runs Frame packer on a single sweep for different number of workers.
+void CheckPackerOnSweep(
+	PackerPtr packer,
+	SequenceEnumeratorPtr randomizer, 
+	SequentialDeserializerPtr deserializer, 
+	size_t numberOfEpochs, 
+	size_t minibatchSize, 
+	bool strictMinibatchSizeCheck,
+	bool performWorkerChunkCheck)
+{
+	for (auto numWorkers : { 1, 8, 16 })
+	{
+		std::set<size_t> workerChunks;
+		std::set<size_t> totalChunks;
+		std::map<size_t, SequentialDeserializer::SequenceInfo> corpus(deserializer->Corpus());
+
+		for (size_t rank = 0; rank < numWorkers; ++rank)
+		{
+			bool shouldAddOne = deserializer->GetChunkDescriptions().size() % numWorkers > rank;
+			size_t expectedNumberOfChunks = deserializer->GetChunkDescriptions().size() / numWorkers + (shouldAddOne ? 1 : 0);
+			
+			workerChunks.clear();
+			for (size_t epoch = 0; epoch < numberOfEpochs; ++epoch)
+			{
+				EpochConfiguration config;
+				config.m_minibatchSizeInSamples = minibatchSize;
+				config.m_truncationSize = 0;
+				config.m_epochIndex = epoch;
+
+				config.m_totalEpochSizeInSamples = deserializer->TotalSize() / numberOfEpochs;
+
+				config.m_numberOfWorkers = numWorkers;
+				config.m_workerRank = rank;
+
+				packer->SetConfiguration(config, std::vector<MemoryProviderPtr> { std::make_shared<CudaMemoryProvider>(0) });
+				randomizer->StartEpoch(config);
+
+				bool shouldAddOneMinibatchSample = config.m_minibatchSizeInSamples % numWorkers > rank;
+				RunSingleWorker(packer, corpus, workerChunks, config.m_minibatchSizeInSamples / numWorkers + (shouldAddOneMinibatchSample ? 1 : 0), strictMinibatchSizeCheck);
+			}
+
+			if (performWorkerChunkCheck)
+			{
+				BOOST_REQUIRE_EQUAL(workerChunks.size(), expectedNumberOfChunks);
+
+				std::set<size_t> intersect;
+				set_intersection(totalChunks.begin(), totalChunks.end(), workerChunks.begin(), workerChunks.end(),
+					std::inserter(intersect, intersect.begin()));
+				BOOST_REQUIRE_EQUAL(intersect.empty(), true);
+			}
+
+			totalChunks.insert(workerChunks.begin(), workerChunks.end());
+		}
+
+
+		BOOST_REQUIRE_EQUAL(totalChunks.size(), deserializer->GetChunkDescriptions().size());
+		BOOST_REQUIRE_EQUAL(corpus.empty(), true);
+	}
+}
+
+BOOST_AUTO_TEST_CASE(SequencePackerBigChunksWithFrames)
+{
+	size_t chunkSizeInSamples = 998;
+	size_t sweepNumberOfSamples = 21335;
+	uint32_t maxSequenceLength = 1;
+	size_t randomizationWindow = chunkSizeInSamples * 5;
+
+	auto deserializer = make_shared<SequentialDeserializer>(0, chunkSizeInSamples, sweepNumberOfSamples, maxSequenceLength);	
+	
+	{
+		auto blockRandomizer = make_shared<BlockRandomizer>(0, randomizationWindow, deserializer, true);
+		PackerPtr packer = std::make_shared<SequencePacker>(blockRandomizer, deserializer->GetStreamDescriptions(), 1, true);
+
+		CheckPackerOnSweep(packer, blockRandomizer, deserializer, 1, 64, true, true);
+		CheckPackerOnSweep(packer, blockRandomizer, deserializer, 5, 64, true, true);
+
+		CheckPackerOnSweep(packer, blockRandomizer, deserializer, 1, 33, true, true);
+		CheckPackerOnSweep(packer, blockRandomizer, deserializer, 5, 31, true, true);
+	}
+
+	{
+		auto noRandomizer = make_shared<NoRandomizer>(deserializer, true);
+		PackerPtr packer = std::make_shared<SequencePacker>(noRandomizer, deserializer->GetStreamDescriptions(), 1, true);
+
+		CheckPackerOnSweep(packer, noRandomizer, deserializer, 1, 64, true, false);
+		CheckPackerOnSweep(packer, noRandomizer, deserializer, 5, 64, true, false);
+
+		CheckPackerOnSweep(packer, noRandomizer, deserializer, 1, 33, true, false);
+		CheckPackerOnSweep(packer, noRandomizer, deserializer, 5, 31, true, false);
+	}
+}
+
+BOOST_AUTO_TEST_CASE(SequencePackerSmallChunksWithFrames)
+{
+	size_t chunkSizeInSamples = 1;
+	size_t sweepNumberOfSamples = 1332;
+	uint32_t maxSequenceLength = 1;
+	size_t randomizationWindow = 1;
+	auto deserializer = make_shared<SequentialDeserializer>(0, chunkSizeInSamples, sweepNumberOfSamples, maxSequenceLength);	
+
+	{
+		auto blockRandomizer = make_shared<BlockRandomizer>(0, randomizationWindow, deserializer, true);
+		PackerPtr packer = std::make_shared<SequencePacker>(blockRandomizer, deserializer->GetStreamDescriptions(), 1, true);
+
+		CheckPackerOnSweep(packer, blockRandomizer, deserializer, 1, 64, true, true);
+		CheckPackerOnSweep(packer, blockRandomizer, deserializer, 3, 64, true, true);
+
+		CheckPackerOnSweep(packer, blockRandomizer, deserializer, 1, 33, true, true);
+		CheckPackerOnSweep(packer, blockRandomizer, deserializer, 3, 31, true, true);
+	}
+
+	{
+		auto noRandomizer = make_shared<NoRandomizer>(deserializer, true);
+		PackerPtr packer = std::make_shared<SequencePacker>(noRandomizer, deserializer->GetStreamDescriptions(), 1, true);
+
+		CheckPackerOnSweep(packer, noRandomizer, deserializer, 1, 64, true, true);
+		CheckPackerOnSweep(packer, noRandomizer, deserializer, 3, 64, true, true);
+
+		CheckPackerOnSweep(packer, noRandomizer, deserializer, 1, 33, true, true);
+		CheckPackerOnSweep(packer, noRandomizer, deserializer, 3, 31, true, true);
+	}
+}
+
+BOOST_AUTO_TEST_CASE(SequencePackerBigChunksWithSequences)
+{
+	size_t chunkSizeInSamples = 998;
+	size_t sweepNumberOfSamples = 21335;
+	uint32_t maxSequenceLength = 300;
+	size_t randomizationWindow = chunkSizeInSamples * 5;
+
+	auto deserializer = make_shared<SequentialDeserializer>(0, chunkSizeInSamples, sweepNumberOfSamples, maxSequenceLength);
+
+	{
+		auto blockRandomizer = make_shared<BlockRandomizer>(0, randomizationWindow, deserializer, true);
+		PackerPtr packer = std::make_shared<SequencePacker>(blockRandomizer, deserializer->GetStreamDescriptions(), 1, true);
+
+		CheckPackerOnSweep(packer, blockRandomizer, deserializer, 1, 64, false, true);
+		CheckPackerOnSweep(packer, blockRandomizer, deserializer, 5, 64, false, true);
+
+		CheckPackerOnSweep(packer, blockRandomizer, deserializer, 1, 33, false, true);
+		CheckPackerOnSweep(packer, blockRandomizer, deserializer, 5, 31, false, true);
+	}
+
+	{
+		auto noRandomizer = make_shared<NoRandomizer>(deserializer, true);
+		PackerPtr packer = std::make_shared<SequencePacker>(noRandomizer, deserializer->GetStreamDescriptions(), 1, true);
+
+		CheckPackerOnSweep(packer, noRandomizer, deserializer, 1, 64, false, false);
+		CheckPackerOnSweep(packer, noRandomizer, deserializer, 5, 64, false, false);
+
+		CheckPackerOnSweep(packer, noRandomizer, deserializer, 1, 33, false, false);
+		CheckPackerOnSweep(packer, noRandomizer, deserializer, 5, 31, false, false);
+	}
+}
+
+BOOST_AUTO_TEST_CASE(SequencePackerSmallChunksWithSequences)
+{
+	size_t chunkSizeInSamples = 1;
+	size_t sweepNumberOfSamples = 1332;
+	uint32_t maxSequenceLength = 300;
+	size_t randomizationWindow = 1;
+	auto deserializer = make_shared<SequentialDeserializer>(0, chunkSizeInSamples, sweepNumberOfSamples, maxSequenceLength);
+
+	{
+		auto blockRandomizer = make_shared<BlockRandomizer>(0, randomizationWindow, deserializer, true);
+		PackerPtr packer = std::make_shared<SequencePacker>(blockRandomizer, deserializer->GetStreamDescriptions(), 1, true);
+
+		CheckPackerOnSweep(packer, blockRandomizer, deserializer, 1, 64, false, true);
+		CheckPackerOnSweep(packer, blockRandomizer, deserializer, 3, 64, false, true);
+
+		CheckPackerOnSweep(packer, blockRandomizer, deserializer, 1, 33, false, true);
+		CheckPackerOnSweep(packer, blockRandomizer, deserializer, 3, 31, false, true);
+	}
+
+	{
+		auto noRandomizer = make_shared<NoRandomizer>(deserializer, true);
+		PackerPtr packer = std::make_shared<SequencePacker>(noRandomizer, deserializer->GetStreamDescriptions(), 1, true);
+
+		CheckPackerOnSweep(packer, noRandomizer, deserializer, 1, 64, false, true);
+		CheckPackerOnSweep(packer, noRandomizer, deserializer, 3, 64, false, true);
+
+		CheckPackerOnSweep(packer, noRandomizer, deserializer, 1, 33, false, true);
+		CheckPackerOnSweep(packer, noRandomizer, deserializer, 3, 31, false, true);
+	}
+}
 
 BOOST_AUTO_TEST_SUITE_END()
 
