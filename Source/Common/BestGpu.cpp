@@ -286,7 +286,6 @@ void BestGpu::GetCudaProperties()
         pd->cudaFreeMem = free;
         pd->cudaTotalMem = total;
         dev++;
-        cudaDeviceReset();
     }
     m_cudaData = m_procData.size() > 0;
     if (rc == CUDA_SUCCESS)
