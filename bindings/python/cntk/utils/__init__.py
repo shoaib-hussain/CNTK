@@ -362,6 +362,9 @@ def sanitize_var_map(op_arguments, arguments, precision=None,
     '''
     from ..io import MinibatchData
 
+    if not op_arguments:
+        return {}
+
     if isinstance(arguments, tuple):
         arguments, seq_starts = arguments
     else:
@@ -388,6 +391,8 @@ def sanitize_var_map(op_arguments, arguments, precision=None,
             var_name_map = dict([(op_arguments[0].name, op_arguments[0])])
             arguments = dict([(op_arguments[0], arguments)])
         else:
+            print(op_arguments)
+            print(arguments)
             raise ValueError('non-dict argument (%s) is not supported for nodes with more than one input' % type(arguments).__name__)
 
     if precision is not None:
